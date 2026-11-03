@@ -1,0 +1,113 @@
+#!/bin/bash
+# Arranque de la instancia: instala Docker, clona el repo, genera .env y
+# levanta Airflow. cloud-init lo ejecuta como root una sola vez; la salida
+# queda en /var/log/cloud-init-output.log.
+#
+# Plantilla de Terraform: las variables con llaves y signo de dólar las
+# sustituye templatefile; las de bash se escriben sin llaves.
+set -euo pipefail
+
+APP_DIR="${app_dir}"
+AIRFLOW_UID=50000
+
+echo "== Instalando docker, git y jq"
+dnf install -y docker git jq
+
+case "$(uname -m)" in
+  x86_64)  COMPOSE_ARCH=x86_64;  BUILDX_ARCH=amd64 ;;
+  aarch64) COMPOSE_ARCH=aarch64; BUILDX_ARCH=arm64 ;;
+  *) echo "Arquitectura no soportada: $(uname -m)" >&2; exit 1 ;;
+esac
+
+PLUGINS_DIR=/usr/local/lib/docker/cli-plugins
+mkdir -p "$PLUGINS_DIR"
+curl -fsSL -o "$PLUGINS_DIR/docker-compose" \
+  "https://github.com/docker/compose/releases/download/${docker_compose_version}/docker-compose-linux-$COMPOSE_ARCH"
+curl -fsSL -o "$PLUGINS_DIR/docker-buildx" \
+  "https://github.com/docker/buildx/releases/download/${docker_buildx_version}/buildx-${docker_buildx_version}.linux-$BUILDX_ARCH"
+chmod 755 "$PLUGINS_DIR/docker-compose" "$PLUGINS_DIR/docker-buildx"
+
+systemctl enable --now docker
+usermod -aG docker ec2-user
+
+if [ ! -f /swapfile ]; then
+  echo "== Creando swap de 2 GiB"
+  dd if=/dev/zero of=/swapfile bs=1M count=2048 status=none
+  chmod 600 /swapfile
+  mkswap /swapfile
+  swapon /swapfile
+  echo '/swapfile none swap defaults 0 0' >> /etc/fstab
+fi
+
+echo "== Clonando ${repo_url} (${repo_branch})"
+if [ ! -d "$APP_DIR/.git" ]; then
+  git clone --depth 1 --branch "${repo_branch}" "${repo_url}" "$APP_DIR"
+fi
+cd "$APP_DIR"
+
+# Certificado raíz de RDS y DocumentDB (TLS obligatorio en ambos).
+mkdir -p certs logs
+curl -fsSL -o certs/global-bundle.pem \
+  https://truststore.pds.rds.amazonaws.com/global/global-bundle.pem
+
+# Secretos propios de Airflow: se generan una vez y no salen de la
+# instancia. Las contraseñas de las bases NO van aquí: el pipeline las lee
+# de Secrets Manager con el rol de la instancia.
+if [ ! -f .airflow-secrets ]; then
+  cat > .airflow-secrets <<SECRETS
+AIRFLOW_UID=$AIRFLOW_UID
+AIRFLOW_FERNET_KEY=$(openssl rand -base64 32 | tr '+/' '-_')
+AIRFLOW_SECRET_KEY=$(openssl rand -hex 32)
+AIRFLOW_ADMIN_USERNAME=airflow
+AIRFLOW_ADMIN_PASSWORD=$(openssl rand -hex 12)
+POSTGRES_USER=airflow
+POSTGRES_PASSWORD=$(openssl rand -hex 16)
+SECRETS
+  chmod 600 .airflow-secrets
+fi
+
+# dw-render-env: regenera .env desde el parámetro de SSM más los secretos
+# locales de Airflow. Se puede volver a ejecutar si cambia un endpoint.
+cat > /usr/local/bin/dw-render-env <<'RENDER'
+#!/bin/bash
+set -euo pipefail
+cd "__APP_DIR__"
+TOKEN=$(curl -fsS -X PUT http://169.254.169.254/latest/api/token \
+  -H "X-aws-ec2-metadata-token-ttl-seconds: 60")
+REGION=$(curl -fsS -H "X-aws-ec2-metadata-token: $TOKEN" \
+  http://169.254.169.254/latest/meta-data/placement/region)
+{
+  echo "# Generado por dw-render-env: no editar a mano."
+  aws ssm get-parameter --region "$REGION" --name "__CONFIG_PARAMETER__" \
+    --query Parameter.Value --output text
+  echo
+  cat .airflow-secrets
+} > .env.tmp
+chmod 600 .env.tmp
+mv .env.tmp .env
+echo ".env actualizado en $(pwd)"
+RENDER
+sed -i "s|__APP_DIR__|$APP_DIR|; s|__CONFIG_PARAMETER__|${config_parameter_name}|" /usr/local/bin/dw-render-env
+chmod 755 /usr/local/bin/dw-render-env
+
+echo "== Generando .env"
+/usr/local/bin/dw-render-env
+
+# Atajo: "dwc ps", "dwc logs -f airflow-scheduler", etc.
+cat > /etc/profile.d/dw.sh <<PROFILE
+dwc() { docker compose --project-directory "$APP_DIR" -f "$APP_DIR/docker/docker-compose.aws.yml" "\$@"; }
+PROFILE
+
+chown -R ec2-user:ec2-user "$APP_DIR"
+chown -R "$AIRFLOW_UID":0 logs
+chmod 644 certs/global-bundle.pem
+
+if [ -f docker/docker-compose.aws.yml ]; then
+  echo "== Levantando Airflow"
+  docker compose --project-directory "$APP_DIR" -f docker/docker-compose.aws.yml up -d --build
+  docker compose --project-directory "$APP_DIR" -f docker/docker-compose.aws.yml ps
+else
+  echo "== docker/docker-compose.aws.yml no existe en la rama ${repo_branch}: Airflow no se levanta"
+fi
+
+echo "== Arranque terminado"

@@ -1,0 +1,27 @@
+# Copiar a terraform.tfvars (ignorado por git) y ajustar.
+# Ningún valor de este archivo es secreto: las contraseñas de las bases las
+# genera Secrets Manager y las de Airflow se generan en la instancia.
+
+aws_region   = "us-east-2"
+aws_profile  = "admin"
+project_name = "ecommerce-dw"
+
+# Rama del repo que clona la instancia (debe estar en GitHub).
+repo_url    = "https://github.com/Dduquejh/Taller-DataWarehouse-DE-20262.git"
+repo_branch = "main"
+
+# IP propia para abrir el UI de Airflow sin túnel (opcional):
+#   echo "[\"$(curl -s https://checkip.amazonaws.com)/32\"]"
+allowed_cidrs = []
+
+# Redshift Serverless: capacidad y tope diario de cómputo.
+redshift_base_capacity         = 8
+redshift_max_capacity          = 8
+redshift_daily_rpu_hours_limit = 16
+
+# Activar después de suscribir la cuenta a QuickSight.
+enable_quicksight_vpc_connection = false
+
+# Alertas de costo (opcional).
+# budget_email       = "correo@ejemplo.com"
+# monthly_budget_usd = 30
