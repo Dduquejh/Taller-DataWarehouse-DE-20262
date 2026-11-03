@@ -12,7 +12,7 @@ with reviews as (
         product_id,
         rating,
         is_verified_purchase,
-        timezone('America/Bogota', reviewed_at) as reviewed_local_at
+        {{ to_business_time('reviewed_at') }} as reviewed_local_at
     from {{ ref('int_mongodb__reviews__valid') }}
 ),
 customers_versioned as (
@@ -26,7 +26,7 @@ resolved_reviews as (
         {{ dbt_utils.generate_surrogate_key(['cast(review.review_id as varchar)']) }} as review_sk,
         customer.customer_sk,
         product.product_sk,
-        date.date_sk,
+        dates.date_sk,
         review.rating,
         review.is_verified_purchase,
         cast(review.reviewed_local_at as date) as business_date
@@ -37,8 +37,8 @@ resolved_reviews as (
     left join products_versioned as product
         on product.product_id = review.product_id
         and {{ scd2_point_in_time_condition('product', 'review.reviewed_local_at') }}
-    left join {{ ref('dim_date') }} as date
-        on date.date = cast(review.reviewed_local_at as date)
+    left join {{ ref('dim_date') }} as dates
+        on dates.date = cast(review.reviewed_local_at as date)
 )
 
 select

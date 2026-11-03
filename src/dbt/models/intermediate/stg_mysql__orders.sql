@@ -1,3 +1,7 @@
+with source as (
+    {{ latest_batch_rows('mysql_raw', 'mysql_orders', 'order_id') }}
+)
+
 select
     cast(order_id as bigint) as order_id,
     cast(customer_id as bigint) as customer_id,
@@ -6,6 +10,7 @@ select
     nullif(trim(sales_channel), '') as sales_channel,
     nullif(trim(payment_method), '') as payment_method,
     cast(total as decimal(14, 2)) as total,
-    _loaded_at,
+    _batch_id,
+    _extracted_at,
     _source
-from {{ source('mysql_raw', 'mysql_orders') }}
+from source

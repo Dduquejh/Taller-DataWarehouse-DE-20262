@@ -1,8 +1,18 @@
+# Las credenciales llegan como variables de entorno del subproceso de dbt
+# (dbt_runner las lee de Secrets Manager); no se guardan en archivos.
 ecommerce_dw:
-  target: local
+  target: aws
   outputs:
-    local:
-      type: duckdb
-      path: /opt/warehouse/warehouse.duckdb
+    aws:
+      type: redshift
+      host: "{{ env_var('REDSHIFT_HOST') }}"
+      port: "{{ env_var('REDSHIFT_PORT', '5439') | as_number }}"
+      user: "{{ env_var('DBT_REDSHIFT_USER') }}"
+      password: "{{ env_var('DBT_REDSHIFT_PASSWORD') }}"
+      dbname: "{{ env_var('REDSHIFT_DATABASE', 'ecommerce_dw') }}"
       schema: intermediate
-      threads: 1
+      threads: 4
+      sslmode: require
+      connect_timeout: 30
+      retries: 1
+      ra3_node: true

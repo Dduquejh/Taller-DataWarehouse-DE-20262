@@ -143,3 +143,13 @@ models:
           - relationships:
               to: ref('dim_event_type')
               field: event_type_sk
+  - name: rpt_sales_dashboard
+    description: >
+      Vista que consume QuickSight. Una fila por línea de venta con fecha, categoría del producto
+      vigente en la fecha del pedido, canal y geografía. last_batch_id y refreshed_at identifican la
+      actualización del warehouse que se está viendo.
+    columns:
+      - name: sale_sk
+        tests: [unique, not_null]
+      - name: sales_amount
+        tests: [not_null]

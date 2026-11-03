@@ -1,64 +1,42 @@
 #!/usr/bin/env bash
-set -euo pipefail
+# Dispara el DAG ecommerce_pipeline y espera su resultado.
+#
+#   scripts/run_pipeline.sh                       # lote automático (full la primera vez, luego incremental)
+#   scripts/run_pipeline.sh --mode full           # copia completa (p. ej. tras generate_data.sh)
+#   scripts/run_pipeline.sh --reprocess 20261103T120000Z   # recarga un lote desde S3
+#   scripts/run_pipeline.sh --no-wait
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
-require_docker
-require_env_file
 
-use_existing_sources=false
-if [[ "${1:-}" == "--existing-sources" ]]; then
-  [[ "$#" -eq 1 ]] || {
-    printf 'Error: --existing-sources does not accept generation options.\n' >&2
-    exit 2
-  }
-  use_existing_sources=true
-fi
-
-scripts_dir="$PROJECT_ROOT/scripts"
-if [[ "$use_existing_sources" == true ]]; then
-  printf 'Starting existing services without rebuilding the image.\n'
-  compose up -d
-else
-  "$scripts_dir/start_infrastructure.sh"
-fi
-"$scripts_dir/create_source_schema.sh"
-if [[ "$use_existing_sources" == true ]]; then
-  printf 'Using existing source data without regeneration.\n'
-else
-  "$scripts_dir/generate_data.sh" "$@"
-fi
-
-dag_available=false
-for _ in {1..60}; do
-  if compose exec -T airflow-scheduler python -c 'from airflow.models.dag import DagModel; from airflow.settings import Session; session = Session(); ready = session.query(DagModel).filter(DagModel.dag_id.in_(["ecommerce_pipeline", "extract_to_raw", "transform_warehouse"])).count() == 3; session.close(); raise SystemExit(0 if ready else 1)' >/dev/null 2>&1; then
-    dag_available=true
-    break
-  fi
-  sleep 2
-done
-[[ "$dag_available" == true ]] || {
-  printf 'Error: project DAGs were not registered in Airflow metadata. Check scheduler logs.\n' >&2
-  exit 1
-}
-
-compose exec -T airflow-scheduler airflow dags unpause --yes --treat-dag-id-as-regex '^(ecommerce_pipeline|extract_to_raw|transform_warehouse)$' >/dev/null
-
-execution_date="$(date -u +'%Y-%m-%dT%H:%M:%S+00:00')"
-printf 'Triggering ecommerce_pipeline at %s...\n' "$execution_date"
-compose exec -T airflow-scheduler airflow dags trigger --exec-date "$execution_date" ecommerce_pipeline >/dev/null
-
-for _ in {1..180}; do
-  state="$(compose exec -T airflow-scheduler airflow dags state ecommerce_pipeline "$execution_date" 2>/dev/null | tail -n 1 | tr -d '\r')"
-  case "$state" in
-    success)
-      printf 'ecommerce_pipeline completed successfully.\n'
-      exit 0
-      ;;
-    failed)
-      printf 'Error: ecommerce_pipeline failed. Check Airflow task logs.\n' >&2
-      exit 1
-      ;;
+mode="auto"
+reprocess=""
+wait_for_result=1
+while [[ "$#" -gt 0 ]]; do
+  case "$1" in
+    --mode) mode="$2"; shift 2 ;;
+    --reprocess) reprocess="$2"; shift 2 ;;
+    --no-wait) wait_for_result=0; shift ;;
+    *) printf 'Opción desconocida: %s\n' "$1" >&2; exit 2 ;;
   esac
-  sleep 5
 done
-printf 'Error: ecommerce_pipeline did not finish within 15 minutes.\n' >&2
-exit 1
+
+run_id="manual__$(date -u +%Y%m%dT%H%M%S)"
+conf="$(printf '{"mode": "%s", "reprocess_batch_id": "%s"}' "$mode" "$reprocess")"
+
+in_airflow airflow dags unpause "$DAG_ID" >/dev/null
+in_airflow airflow dags trigger "$DAG_ID" --run-id "$run_id" --conf "$conf" >/dev/null
+printf 'DAG %s disparado: run_id=%s conf=%s\n' "$DAG_ID" "$run_id" "$conf"
+[[ "$wait_for_result" -eq 1 ]] || exit 0
+
+state=""
+for _ in $(seq 1 240); do
+  state="$(in_airflow airflow dags list-runs -d "$DAG_ID" -o json 2>/dev/null \
+    | jq -r --arg id "$run_id" '.[] | select(.run_id == $id) | .state')"
+  case "$state" in
+    success|failed) break ;;
+  esac
+  sleep 15
+done
+
+printf 'Resultado de %s: %s\n' "$run_id" "${state:-desconocido}"
+"$PROJECT_ROOT/scripts/warehouse.sh" runs | head -4 || true
+[[ "$state" == "success" ]]

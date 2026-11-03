@@ -221,6 +221,14 @@ variable "enable_quicksight_vpc_connection" {
   default     = false
 }
 
+# IDs de los datasets SPICE que el pipeline refresca al terminar un lote.
+# Se conocen después de crear el dataset en QuickSight.
+variable "quicksight_dataset_ids" {
+  description = "Datasets SPICE a refrescar tras cada lote, p. ej. [\"sales-dashboard\"]"
+  type        = list(string)
+  default     = []
+}
+
 # ---------------------------------------------------------------- Costos
 
 variable "budget_email" {

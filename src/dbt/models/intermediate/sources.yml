@@ -1,8 +1,14 @@
 version: 2
 
+# raw es de solo anexado: cada lote agrega sus filas con _batch_id. staging
+# toma la última versión de cada llave desde la última carga completa (ver
+# la macro latest_batch_rows).
 sources:
   - name: mysql_raw
     schema: raw
+    # RAW es palabra reservada en Redshift.
+    quoting:
+      schema: true
     tables:
       - name: mysql_customers
       - name: mysql_products
@@ -10,6 +16,14 @@ sources:
       - name: mysql_order_items
   - name: mongodb_raw
     schema: raw
+    quoting:
+      schema: true
     tables:
       - name: mongo_reviews
       - name: mongo_navigation_events
+  - name: control
+    schema: control
+    description: Registro de lotes cargados y de ejecuciones del pipeline.
+    tables:
+      - name: batch_entities
+      - name: pipeline_runs

@@ -1,7 +1,8 @@
 -- Falla si la fecha de venta de fct_sales no coincide con la fecha del pedido en raw (sin transformar).
 -- Cubre pedidos cercanos a medianoche: una conversión de zona horaria incorrecta cambiaría el día.
+-- raw es de solo anexado: un pedido sin cambios aparece una vez por carga completa, siempre con la misma fecha.
 with raw_order_dates as (
-    select
+    select distinct
         order_id,
         cast(order_date as date) as date
     from {{ source('mysql_raw', 'mysql_orders') }}
@@ -20,4 +21,4 @@ select
     sales.date_sk as fact_date_sk
 from expected
 inner join {{ ref('fct_sales') }} as sales using (sale_sk)
-where expected.date_sk is distinct from sales.date_sk
+where {{ is_distinct_from('expected.date_sk', 'sales.date_sk') }}

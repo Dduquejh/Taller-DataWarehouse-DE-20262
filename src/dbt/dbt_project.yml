@@ -6,18 +6,27 @@ profile: ecommerce_dw
 model-paths: ["models"]
 test-paths: ["tests"]
 clean-targets: ["target", "dbt_packages"]
+# dbt_runner apunta los paquetes a una carpeta escribible del contenedor.
+packages-install-path: "{{ env_var('DBT_PACKAGES_DIR', 'dbt_packages') }}"
 
 models:
   ecommerce_dw:
     intermediate:
       +schema: intermediate
       +materialized: view
+      # Vistas de enlace tardío: reconstruir una vista no borra en cascada a
+      # las que dependen de ella.
+      +bind: false
     quarantine:
       +schema: quarantine
       +materialized: table
     marts:
       +schema: marts
       +materialized: table
+
+snapshots:
+  ecommerce_dw:
+    +schema: snapshots
 
 vars:
   valid_sales_channels: ['web', 'móvil', 'tienda']

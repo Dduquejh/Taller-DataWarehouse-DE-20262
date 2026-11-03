@@ -12,7 +12,7 @@ with line_items as (
         order_header.customer_id,
         order_header.sales_channel,
         order_header.order_date,
-        cast(order_header.order_date as date) as date,
+        cast(order_header.order_date as date) as order_day,
         line_item.quantity,
         line_item.unit_price,
         line_item.subtotal
@@ -31,12 +31,12 @@ resolved_sales as (
         customer.customer_sk,
         product.product_sk,
         sales_channel.sales_channel_sk,
-        date.date_sk,
+        dates.date_sk,
         geography.geography_sk,
         line_items.quantity,
         line_items.unit_price,
         line_items.subtotal,
-        line_items.date as business_date
+        line_items.order_day as business_date
     from line_items
     left join customers_versioned as customer
         on customer.customer_id = line_items.customer_id
@@ -46,8 +46,8 @@ resolved_sales as (
         and {{ scd2_point_in_time_condition('product', 'line_items.order_date') }}
     left join {{ ref('dim_sales_channel') }} as sales_channel
         on sales_channel.sales_channel = line_items.sales_channel
-    left join {{ ref('dim_date') }} as date
-        on date.date = line_items.date
+    left join {{ ref('dim_date') }} as dates
+        on dates.date = line_items.order_day
     left join {{ ref('dim_geography') }} as geography
         on geography.country = 'Colombia'
         and geography.department = customer.department

@@ -2,10 +2,9 @@
 """Aplica cambios repetibles de ciudad y categoría para demostrar SCD2."""
 
 import argparse
-import os
 from datetime import datetime
 
-import pymysql
+from ecommerce_dw.connections import mysql_connection
 
 
 def main():
@@ -23,15 +22,7 @@ def main():
     )
     args = parser.parse_args()
 
-    connection = pymysql.connect(
-        host=os.getenv("MYSQL_HOST", "localhost"),
-        port=int(os.getenv("MYSQL_PORT", "3306")),
-        user=os.environ["MYSQL_USER"],
-        password=os.environ["MYSQL_PASSWORD"],
-        database=os.getenv("MYSQL_DATABASE", "ecommerce"),
-        charset="utf8mb4",
-        autocommit=False,
-    )
+    connection = mysql_connection(autocommit=False)
     try:
         with connection.cursor() as cursor:
             cursor.execute("SELECT city, department FROM customers WHERE customer_id=%s", (args.customer_id,))

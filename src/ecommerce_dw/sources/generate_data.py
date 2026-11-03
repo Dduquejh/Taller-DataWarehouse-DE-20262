@@ -3,17 +3,19 @@
 
 import argparse
 import itertools
-import os
+import logging
 import random
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-import pymysql
 from faker import Faker
-from pymongo import MongoClient
-from pymongo.errors import CollectionInvalid
+from pymongo.errors import CollectionInvalid, OperationFailure
+
+from ecommerce_dw.connections import mongo_client, mongo_database, mysql_connection
+
+LOGGER = logging.getLogger(__name__)
 
 DEPARTMENTS = [
     ("Bogotá, D.C.", "Bogotá"),
@@ -110,26 +112,45 @@ def parse_args():
 
 
 def connect_mysql():
-    return pymysql.connect(
-        host=os.getenv("MYSQL_HOST", "localhost"),
-        port=int(os.getenv("MYSQL_PORT", "3306")),
-        user=os.environ["MYSQL_USER"],
-        password=os.environ["MYSQL_PASSWORD"],
-        database=os.getenv("MYSQL_DATABASE", "ecommerce"),
-        charset="utf8mb4",
-        autocommit=False,
-    )
+    """RDS MySQL con TLS; credenciales desde Secrets Manager (ver connections.py)."""
+    return mysql_connection(autocommit=False)
 
 
 def ensure_mongo_collections(db):
+    """Crea las colecciones con su validador $jsonSchema.
+
+    DocumentDB 5.0 admite $jsonSchema, pero no todas las palabras clave de
+    MongoDB. Si el servidor rechaza el validador, la colección se crea sin él
+    y se registra una advertencia: la calidad se sigue controlando en dbt.
+    """
     for name, validator in (("reviews", REVIEW_VALIDATOR), ("navigation_events", EVENT_VALIDATOR)):
-        if name in db.list_collection_names():
-            db.command("collMod", name, validator=validator, validationLevel="strict")
-        else:
-            try:
-                db.create_collection(name, validator=validator, validationLevel="strict")
-            except CollectionInvalid:
+        try:
+            if name in db.list_collection_names():
                 db.command("collMod", name, validator=validator, validationLevel="strict")
+            else:
+                try:
+                    db.create_collection(name, validator=validator, validationLevel="strict")
+                except CollectionInvalid:
+                    db.command("collMod", name, validator=validator, validationLevel="strict")
+        except OperationFailure as error:
+            LOGGER.warning("Validador no aplicado a %s: %s", name, error)
+            if name not in db.list_collection_names():
+                db.create_collection(name)
+
+
+def insert_bypassing_validation(collection, documents):
+    """Inserta saltando el validador, como una importación externa.
+
+    DocumentDB acepta bypassDocumentValidation; si el servidor no lo admite,
+    se insertan sin la opción (en ese caso la colección no tiene validador).
+    """
+    if not documents:
+        return
+    try:
+        collection.insert_many(documents, ordered=True, bypass_document_validation=True)
+    except OperationFailure as error:
+        LOGGER.warning("bypass_document_validation no disponible (%s); inserción normal", error)
+        collection.insert_many(documents, ordered=True)
 
 
 def build_rows(args):
@@ -416,9 +437,9 @@ def build_bad_records(args, start):
 
 
 def load_mongo(args, rng, fake, customers, products, start, bad):
-    client = MongoClient(os.environ["MONGODB_URI"])
+    client = mongo_client()
     try:
-        db = client[os.getenv("MONGO_DATABASE", "ecommerce")]
+        db = mongo_database(client)
         ensure_mongo_collections(db)
         reviews, events = db["reviews"], db["navigation_events"]
         reviews.delete_many({})
@@ -429,16 +450,15 @@ def load_mongo(args, rng, fake, customers, products, start, bad):
             reviews.insert_many(review_docs, ordered=True)
         if event_docs:
             events.insert_many(event_docs, ordered=True)
-        # Simulates an import that skips the validator; the strict schema itself is unchanged.
-        if bad["mongo_reviews"]:
-            reviews.insert_many(bad["mongo_reviews"], ordered=True, bypass_document_validation=True)
-        if bad["mongo_events"]:
-            events.insert_many(bad["mongo_events"], ordered=True, bypass_document_validation=True)
+        # Simula una importación que salta el validador; el esquema estricto no cambia.
+        insert_bypassing_validation(reviews, bad["mongo_reviews"])
+        insert_bypassing_validation(events, bad["mongo_events"])
     finally:
         client.close()
 
 
 def main():
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     args = parse_args()
     rng, fake, customers, products, orders, details, start = build_rows(args)
     bad = build_bad_records(args, start)

@@ -32,6 +32,7 @@ resource "aws_ssm_parameter" "pipeline_env" {
     "REDSHIFT_WORKGROUP=${aws_redshiftserverless_workgroup.dw.workgroup_name}",
     "REDSHIFT_SECRET_ARN=${aws_redshiftserverless_namespace.dw.admin_password_secret_arn}",
     "REDSHIFT_COPY_ROLE_ARN=${aws_iam_role.redshift_s3.arn}",
+    "QUICKSIGHT_DATASET_IDS=${join(",", var.quicksight_dataset_ids)}",
   ])
 }
 

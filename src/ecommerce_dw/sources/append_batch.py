@@ -6,12 +6,12 @@ confirman si ya existen con los mismos valores y los documentos de MongoDB se re
 """
 
 import argparse
-import os
 import random
 from datetime import datetime, timedelta
 
 from faker import Faker
-from pymongo import MongoClient
+
+from ecommerce_dw.connections import mongo_client, mongo_database
 
 from ecommerce_dw.sources.generate_data import (
     build_review_text,
@@ -113,9 +113,9 @@ def build_mongo_documents(batch_id, business_day, customers, products, fake, rng
 
 def write_mongo_documents(reviews, events):
     """Reemplaza por _id los documentos del lote, así repetirlo no duplica."""
-    client = MongoClient(os.environ["MONGODB_URI"])
+    client = mongo_client()
     try:
-        db = client[os.getenv("MONGO_DATABASE", "ecommerce")]
+        db = mongo_database(client)
         ensure_mongo_collections(db)
         for document in reviews:
             db["reviews"].replace_one({"_id": document["_id"]}, document, upsert=True)

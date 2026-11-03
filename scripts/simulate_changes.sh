@@ -1,7 +1,5 @@
 #!/usr/bin/env bash
-set -euo pipefail
+# Cambia ciudad de un cliente y categoría de un producto en RDS (SCD tipo 2).
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
-require_docker
-require_env_file
-printf 'Applying repeatable source changes...\n'
-run_airflow_image python /opt/airflow/src/ecommerce_dw/sources/simulate_changes.py "$@"
+printf 'Aplicando cambios en la fuente...\n'
+pipeline_module ecommerce_dw.sources.simulate_changes "$@"

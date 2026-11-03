@@ -1,3 +1,7 @@
+with source as (
+    {{ latest_batch_rows('mysql_raw', 'mysql_products', 'product_id') }}
+)
+
 select
     cast(product_id as bigint) as product_id,
     nullif(trim(name), '') as name,
@@ -6,6 +10,7 @@ select
     nullif(trim(description), '') as description,
     cast(is_active as boolean) as is_active,
     cast(updated_at as timestamp) as updated_at,
-    _loaded_at,
+    _batch_id,
+    _extracted_at,
     _source
-from {{ source('mysql_raw', 'mysql_products') }}
+from source

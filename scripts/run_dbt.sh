@@ -1,19 +1,7 @@
 #!/usr/bin/env bash
-set -euo pipefail
+# Ejecuta un comando de dbt contra Redshift fuera del DAG, p. ej.:
+#   scripts/run_dbt.sh test
+#   scripts/run_dbt.sh run path:models/marts
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
-require_docker
-require_env_file
-[[ -f "$PROJECT_ROOT/warehouse/warehouse.duckdb" ]] || { printf 'Error: warehouse/warehouse.duckdb is missing. Run scripts/run_pipeline.sh first.\n' >&2; exit 1; }
-printf 'Installing locked dbt packages...\n'
-dbt_command deps
-printf 'Loading seeds...\n'
-dbt_command seed --threads 1
-printf 'Building intermediate models...\n'
-dbt_command run --select path:models/intermediate --threads 1
-printf 'Updating snapshots...\n'
-dbt_command snapshot --threads 1
-printf 'Building warehouse models...\n'
-dbt_command run --threads 1
-printf 'Running dbt data tests...\n'
-dbt_command test --threads 1
-printf 'dbt workflow completed successfully.\n'
+[[ "$#" -ge 1 ]] || { printf 'Uso: %s COMANDO [SELECTOR]\n' "$0" >&2; exit 2; }
+pipeline_module ecommerce_dw.transformations.dbt_runner "$@"

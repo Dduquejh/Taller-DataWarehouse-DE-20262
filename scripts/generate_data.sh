@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
-set -euo pipefail
+# Crea las tablas de RDS y las colecciones de DocumentDB y carga datos
+# sintéticos (reemplaza los existentes). Acepta las opciones de
+# generate_data.py, p. ej. --seed 42 --bad-records 2.
+#
+# Después de regenerar, el siguiente lote debe ser una carga completa:
+#   scripts/run_pipeline.sh --mode full
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
-require_docker
-require_env_file
-printf 'Generating source data...\n'
-run_airflow_image python /opt/airflow/src/ecommerce_dw/sources/generate_data.py "$@"
+printf 'Generando datos en RDS MySQL y DocumentDB...\n'
+pipeline_module ecommerce_dw.sources.generate_data "$@"

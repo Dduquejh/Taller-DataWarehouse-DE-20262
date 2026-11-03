@@ -1,15 +1,47 @@
 version: 2
 
+# Cada rechazo conserva su motivo (rejection_reason) y su lote de origen
+# (_batch_id, _extracted_at), que lleva al archivo en S3 y a control.batch_entities.
 models:
   - name: quarantine_mysql__customers
-    description: Clientes rechazados por calidad de datos, con su motivo en rejection_reason.
+    description: Clientes rechazados por calidad de datos, con su motivo y su lote de origen.
+    columns:
+      - name: rejection_reason
+        tests: [not_null]
+      - name: _batch_id
+        tests: [not_null]
   - name: quarantine_mysql__products
-    description: Productos rechazados por calidad de datos, con su motivo en rejection_reason.
+    description: Productos rechazados por calidad de datos, con su motivo y su lote de origen.
+    columns:
+      - name: rejection_reason
+        tests: [not_null]
+      - name: _batch_id
+        tests: [not_null]
   - name: quarantine_mysql__orders
-    description: Pedidos rechazados por calidad de datos, con su motivo en rejection_reason.
+    description: Pedidos rechazados por calidad de datos, con su motivo y su lote de origen.
+    columns:
+      - name: rejection_reason
+        tests: [not_null]
+      - name: _batch_id
+        tests: [not_null]
   - name: quarantine_mysql__order_items
-    description: Líneas de pedido rechazadas por calidad de datos, con su motivo en rejection_reason.
+    description: Líneas de pedido rechazados por calidad de datos, con su motivo y su lote de origen.
+    columns:
+      - name: rejection_reason
+        tests: [not_null]
+      - name: _batch_id
+        tests: [not_null]
   - name: quarantine_mongodb__reviews
-    description: Reseñas rechazadas por calidad de datos, con su motivo en rejection_reason.
+    description: Reseñas rechazados por calidad de datos, con su motivo y su lote de origen.
+    columns:
+      - name: rejection_reason
+        tests: [not_null]
+      - name: _batch_id
+        tests: [not_null]
   - name: quarantine_mongodb__navigation_events
-    description: Eventos de navegación rechazados por calidad de datos, con su motivo en rejection_reason.
+    description: Eventos de navegación rechazados por calidad de datos, con su motivo y su lote de origen.
+    columns:
+      - name: rejection_reason
+        tests: [not_null]
+      - name: _batch_id
+        tests: [not_null]
