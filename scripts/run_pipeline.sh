@@ -29,8 +29,11 @@ printf 'DAG %s disparado: run_id=%s conf=%s\n' "$DAG_ID" "$run_id" "$conf"
 
 state=""
 for _ in $(seq 1 240); do
+  # Airflow escribe líneas de log antes del JSON en la misma salida. Un fallo
+  # puntual de esta consulta no debe cortar la espera.
   state="$(in_airflow airflow dags list-runs -d "$DAG_ID" -o json 2>/dev/null \
-    | jq -r --arg id "$run_id" '.[] | select(.run_id == $id) | .state')"
+    | grep -v '^\[[0-9]\{4\}-' \
+    | jq -r --arg id "$run_id" '.[] | select(.run_id == $id) | .state' || true)"
   case "$state" in
     success|failed) break ;;
   esac
