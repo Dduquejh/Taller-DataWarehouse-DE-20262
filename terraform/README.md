@@ -3,8 +3,12 @@
 Un solo stack de Terraform crea todo el ambiente. Un `apply` lo levanta y un
 `destroy` lo elimina, sin pasos intermedios entre stacks.
 
+Este documento describe la infraestructura. Los pasos para desplegarla, ejecutar
+el pipeline y eliminarla están en el [README principal](../README.md).
+
 ```mermaid
 flowchart LR
+    USER["Navegador<br/>(IP autorizada)"]
     subgraph VPC["VPC 10.20.0.0/16"]
       subgraph Pub["Subred pública"]
         EC2["EC2: Airflow + dbt<br/>(Docker Compose)"]
@@ -22,6 +26,7 @@ flowchart LR
     SSM["SSM Parameter Store"]
     QS["QuickSight"]
 
+    USER -- "8080 HTTP" --> EC2
     EC2 -- 3306 TLS --> RDS
     EC2 -- 27017 TLS --> DOC
     EC2 -- 5439 TLS --> RS
@@ -46,79 +51,72 @@ flowchart LR
 | `quicksight.tf` | Conexión VPC de QuickSight hacia Redshift (opcional) |
 | `budget.tf` | Presupuesto mensual con alertas por correo (opcional) |
 
+El plan crea 53 recursos. El presupuesto agrega 1, si se define `budget_email`, y
+la conexión de QuickSight agrega 3, con `enable_quicksight_vpc_connection = true`.
+
 ## Conexiones permitidas
 
 | Origen | Destino | Puerto | Cómo se autoriza |
 |---|---|---|---|
+| IP autorizada | Airflow (EC2) | 8080 | Regla de entrada limitada a `allowed_cidrs` |
+| EC2 Instance Connect | EC2 | 22 | Lista de prefijos administrada de ese servicio de AWS |
 | Airflow (EC2) | RDS MySQL | 3306 | SG `mysql` ← SG `airflow`; usuario y contraseña desde Secrets Manager; TLS obligatorio |
 | Airflow (EC2) | DocumentDB | 27017 | SG `docdb` ← SG `airflow`; Secrets Manager; TLS obligatorio |
 | Airflow (EC2) / dbt | Redshift | 5439 | SG `redshift` ← SG `airflow`; Secrets Manager o `GetCredentials`; `require_ssl` |
 | Airflow (EC2) | S3 `raw/`, `control/` | 443 | Rol `airflow-ec2`; sin `DeleteObject` en `raw/` |
 | Redshift | S3 `raw/` | 443 | Rol `redshift-s3` (solo lectura); tráfico por el endpoint gateway |
 | QuickSight | Redshift | 5439 | Conexión VPC: SG `quicksight` ↔ SG `redshift` |
-| Equipo local | Todo lo anterior | — | Solo por túneles de Session Manager a través de la instancia |
 
 Ninguna base de datos es pública ni tiene ruta a internet. No existen llaves
 de acceso: la instancia usa su rol por IMDSv2 y las contraseñas viven en
 Secrets Manager. El `.env` de la instancia contiene solo endpoints y ARNs,
 más las claves propias de Airflow generadas en la misma instancia.
 
-## Requisitos
-
-- Terraform ≥ 1.5 y AWS CLI v2 con el
-  [Session Manager plugin](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html).
-- Un perfil de AWS CLI con permisos de administrador (en los ejemplos, `admin`).
-- La rama que se despliega debe estar en GitHub (`repo_branch`), porque la
-  instancia la clona por HTTPS. Si el repositorio es privado, hay que
-  hacerlo público o cambiar `repo_url`.
-
-## Despliegue
-
-```bash
-cd terraform
-cp terraform.tfvars.example terraform.tfvars   # ajustar perfil, rama, IP
-terraform init
-terraform plan
-terraform apply                                 # ~15-20 min (DocumentDB y RDS son lo más lento)
-```
-
-Después de `apply`, la instancia tarda de 5 a 10 minutos más en construir
-la imagen de Airflow:
-
-```bash
-eval "$(terraform output -raw ssm_session)"
-sudo tail -f /var/log/cloud-init-output.log     # termina en "== Arranque terminado"
-dwc ps                                          # atajo de docker compose
-```
-
-### QuickSight (segundo apply)
-
-1. Suscribir la cuenta a QuickSight en la consola, en la misma región.
-2. `terraform apply -var enable_quicksight_vpc_connection=true`
-3. En QuickSight crear el data source de Redshift con la conexión VPC
-   `ecommerce-dw-redshift`, el endpoint `terraform output -raw redshift_endpoint`,
-   el puerto 5439 y la base `ecommerce_dw`. Se recomienda un usuario de
-   solo lectura sobre `marts` en lugar del administrador.
-
 ## Acceso
 
-| Para | Comando (desde `terraform/`) |
+El camino principal no requiere instalar nada en el equipo local:
+
+| Para | Cómo |
+|---|---|
+| Terminal en la instancia | Consola de AWS: **EC2 → Instancias → `ecommerce-dw-airflow` → Connect → Session Manager** |
+| Interfaz de Airflow | `terraform output -raw airflow_url`, con `http://`, desde una IP de `allowed_cidrs` |
+| Contraseña de Airflow (usuario `airflow`) | En la instancia: `sudo grep AIRFLOW_ADMIN_PASSWORD /opt/ecommerce-dw/.airflow-secrets` |
+| Consultas en Redshift | `scripts/warehouse.sh query "select ..."` en la instancia, o Query Editor v2 en la consola |
+| Credenciales de una base | `terraform output secret_value_commands` |
+
+### Túneles (opcional)
+
+Con el
+[Session Manager plugin](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html)
+instalado, se puede entrar desde el equipo local a la instancia y a los servicios
+privados. Estos comandos se ejecutan desde `terraform/`:
+
+| Para | Comando |
 |---|---|
 | Terminal en la instancia | `eval "$(terraform output -raw ssm_session)"` |
 | UI de Airflow → `localhost:8080` | `eval "$(terraform output -raw ssm_tunnel_airflow)"` |
 | DBeaver → MySQL en `localhost:3307` | `eval "$(terraform output -raw ssm_tunnel_mysql)"` |
 | Compass → DocumentDB en `localhost:27018` | `eval "$(terraform output -raw ssm_tunnel_docdb)"` |
 | DBeaver → Redshift en `localhost:5439` | `eval "$(terraform output -raw ssm_tunnel_redshift)"` |
-| Credenciales de una base | `terraform output secret_value_commands` |
-| Contraseña de Airflow (usuario `airflow`) | dentro de la sesión: `terraform output -raw airflow_password_command` |
 
 Por el túnel, DocumentDB necesita `tls=true&tlsCAFile=global-bundle.pem&tlsAllowInvalidHostnames=true&directConnection=true`,
 porque el certificado está emitido para el endpoint y no para `localhost`.
+
+### Cambio de un endpoint
 
 Si cambia un endpoint (p. ej. al recrear una base), dentro de la instancia:
 
 ```bash
 sudo dw-render-env && dwc up -d
+```
+
+### Cambios en el arranque
+
+La instancia ignora los cambios de `user_data` para no recrearse sin aviso. Para
+aplicar un cambio en `user_data.sh.tftpl`, hay que recrearla:
+
+```bash
+terraform apply -replace=aws_instance.airflow
 ```
 
 ## Pausar para ahorrar
@@ -130,16 +128,7 @@ sudo dw-render-env && dwc up -d
 | DocumentDB | `aws docdb stop-db-cluster --db-cluster-identifier ecommerce-dw-docdb` | `start-db-cluster` (igual, 7 días) |
 | Redshift Serverless | Se cobra solo mientras ejecuta consultas | — |
 
-## Eliminar todo
-
-```bash
-terraform destroy
-```
-
-Borra la VPC, las bases (sin snapshot final), el bucket con su contenido
-(`s3_force_destroy = true`), los roles y la instancia. Los secretos
-gestionados se eliminan junto con su base. La suscripción de QuickSight es
-de la cuenta y se cancela a mano en la consola.
+La IP pública de la instancia cambia al encenderla de nuevo.
 
 ## Costo estimado (us-east-2, on-demand, aproximado)
 

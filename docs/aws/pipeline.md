@@ -2,7 +2,8 @@
 
 Este documento explica cómo funciona el pipeline migrado: lotes, marcas de
 agua, estados, idempotencia, recuperación y las diferencias frente a la
-versión local con DuckDB. La infraestructura está en
+versión local con DuckDB. Los comandos para replicarlo están en el
+[README principal](../../README.md), y la infraestructura en
 [terraform/README.md](../../terraform/README.md).
 
 ## Flujo
@@ -31,9 +32,16 @@ El DAG `ecommerce_pipeline` ejecuta, en orden y sin pasos manuales:
 | 6 | `dbt_test` | Ejecuta pruebas de unicidad, nulos, relaciones, reglas de negocio y conciliación |
 | 7 | `record_result` | Siempre se ejecuta. Escribe `control.pipeline_runs` y `s3://…/control/runs/`, marca el lote como `processed` y, opcionalmente, refresca SPICE |
 
-Todas las tareas tienen 2 reintentos con espera exponencial (30 s a 5 min).
+Las tareas tienen por defecto 2 reintentos con espera exponencial (30 s a 5 min).
+Las excepciones son `validate_and_prepare`, con 1 reintento, y `dbt_test` y
+`record_result`, sin reintentos porque repetirlas no cambiaría el resultado.
 `max_active_runs=1` evita lotes concurrentes. Cada línea de log lleva
 `[batch=<id>]`.
+
+El DAG está programado a diario a las 06:00 de Bogotá, con `catchup=False`. Al
+activarlo por primera vez, Airflow crea también una ejecución programada, con su
+propio lote. El resultado no cambia, porque staging toma la versión más reciente
+de cada llave.
 
 ## Lotes
 
@@ -109,32 +117,34 @@ scripts/warehouse.sh quarantine
 
 ## Escenarios de evidencia
 
-Se ejecutan en la instancia, desde `/opt/ecommerce-dw`.
+Los comandos de cada escenario están en el
+[README principal](../../README.md#6-escenarios-de-validación).
 
-| Escenario | Cómo se demuestra | Resultado esperado |
+| Escenario | Qué lo garantiza | Resultado esperado |
 |---|---|---|
-| Carga inicial | `scripts/generate_data.sh && scripts/run_pipeline.sh --mode full`; luego `scripts/warehouse.sh reconcile` | Marts poblados y hechos conciliados con la fuente validada |
-| Registros defectuosos | `scripts/warehouse.sh quarantine` | Rechazos con motivo y lote |
-| Repetición de un lote exitoso | `scripts/run_pipeline.sh --reprocess <batch_id>` y `scripts/warehouse.sh state` antes y después | Misma huella (`digest`) en los tres hechos y snapshots sin versiones nuevas |
-| Nuevo lote incremental | `scripts/verify_incremental_load.sh --batch-id N` | Cada hecho crece en 3 filas, y repetir o reprocesar no cambia nada |
-| Cambio SCD2 | `scripts/simulate_changes.sh && scripts/run_pipeline.sh`; luego `scripts/warehouse.sh scd2` | Nueva versión con `is_current = true` y la anterior con `valid_to` |
-| Fallo controlado | Ver la sección siguiente | Recuperación sin pérdida ni duplicados |
+| Carga inicial | Extracción completa, `COPY` por lote y pruebas de dbt | Marts poblados y hechos conciliados con la fuente validada |
+| Registros defectuosos | Modelos `qa` y tablas `quarantine.*` | Rechazos con motivo y lote |
+| Repetición de un lote exitoso | Hechos por llave y staging con la última versión | Misma huella (`digest`) en los tres hechos y snapshots sin versiones nuevas |
+| Nuevo lote incremental | Marca de agua por entidad | Cada hecho crece en 3 filas, y repetir o reprocesar no cambia nada |
+| Cambio SCD2 | Snapshots de dbt | Nueva versión con `is_current = true` y la anterior con `valid_to` |
+| Fallo controlado | Transacción por lote y `batch_id` estable | Recuperación sin pérdida ni duplicados |
 
-### Fallo controlado y reejecución
+### Cómo se identifica y recupera una ejecución fallida
 
-1. En Airflow, en **Admin → Variables**, crear `ecommerce_dw_fail_stage` con el valor `load`. También acepta `extract` y `dbt`.
-2. Ejecutar `scripts/run_pipeline.sh`. `load_raw` copia la primera entidad y falla antes del `COMMIT`. La transacción se revierte, así que `raw` y `control` quedan como estaban. `record_result` registra `failed` en `control.pipeline_runs`.
-3. Identificar el fallo:
-   - `scripts/warehouse.sh runs` muestra el `batch_id`, `failed_tasks` y el estado.
-   - Los logs de la tarea muestran `[batch=…] fallo simulado`.
-4. Borrar la variable y, en la ejecución fallida, hacer **Clear** sobre `load_raw` con *Downstream* activado. El lote conserva su `batch_id`: no se vuelve a extraer, porque los archivos ya están en S3, se carga una sola vez y termina `processed`.
-5. `scripts/warehouse.sh reconcile` y `state` muestran que no hubo pérdida ni duplicados.
+La variable de Airflow `ecommerce_dw_fail_stage` (`extract`, `load` o `dbt`) hace
+fallar esa etapa a propósito. Con `load`, esto es lo que ocurre:
+
+1. **Fallo:** `load_raw` copia la primera entidad y falla antes del `COMMIT`. La transacción se revierte, así que `raw` y `control` quedan como estaban. `record_result` registra `failed` en `control.pipeline_runs`.
+2. **Identificación:** `control.pipeline_runs` guarda el `batch_id`, `failed_tasks` y el estado, y los logs de la tarea muestran `[batch=…] fallo simulado`.
+3. **Recuperación:** se borra la variable y se hace **Clear** sobre `load_raw` con *Downstream* activado. El lote conserva su `batch_id`: no se vuelve a extraer, porque los archivos ya están en S3, se carga una sola vez y termina `processed`. Sin *Downstream*, las tareas siguientes se quedan en `upstream_failed`.
+4. **Comprobación:** la conciliación y la huella de los hechos muestran que no hubo pérdida ni duplicados.
 
 ## QuickSight
 
 El dashboard consume la vista `marts.rpt_sales_dashboard`: una fila por
 línea de venta con fecha, categoría, canal y geografía, más `last_batch_id` y
-`refreshed_at`.
+`refreshed_at`. Los pasos para crearlo están en el
+[README principal](../../README.md#7-dashboard-en-quicksight).
 
 Elementos mínimos del dashboard:
 
@@ -189,6 +199,7 @@ exitoso. Sin SPICE (Direct Query), el dashboard lee la vista en cada consulta.
 | `TIMESTAMPTZ` en raw | `TIMESTAMP` en UTC; la conversión se hace en los hechos |
 | Esquema `raw` | `RAW` es palabra reservada: va entre comillas (`"raw".tabla`) |
 | Vistas | `bind: false` (late binding), para que reconstruir una vista no borre en cascada a las dependientes |
+| `exists` correlacionado en el filtro incremental | Macro `row_fingerprint`: `not in` sobre una huella de la llave y las columnas seguidas, porque Redshift rechaza ese patrón (`correlated subquery pattern is not supported`) |
 
 ### MongoDB frente a DocumentDB
 
