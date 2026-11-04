@@ -48,7 +48,7 @@ cd "$APP_DIR"
 # Certificado raíz de RDS y DocumentDB (TLS obligatorio en ambos).
 mkdir -p certs logs
 curl -fsSL -o certs/global-bundle.pem \
-  https://truststore.pds.rds.amazonaws.com/global/global-bundle.pem
+  https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem
 
 # Secretos propios de Airflow: se generan una vez y no salen de la
 # instancia. Las contraseñas de las bases NO van aquí: el pipeline las lee
